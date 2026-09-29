@@ -46,7 +46,7 @@ graph LR
 | Label | Primary property | Property อื่น | หน้าที่ |
 |---|---|---|---|
 | Person | person_id | name | ผู้ใช้ระบบ (P01–P15) |
-| Style | style_id | name | ทรงผม (H01–H12) |
+| Style | style_id | name, image | ทรงผม (H01–H12), image = ชื่อไฟล์ใน `images/` |
 
 ### Relationship
 
@@ -195,13 +195,34 @@ def get_driver():
 - **Dashboard:** จำนวน Person / Style / LIKES / RECOMMENDED, กราฟทรงผมยอดนิยม, ทรงที่ผู้ใช้ชอบ
 - **Recommendations:** เลือกผู้ใช้, กำหนด Top-N, แสดงคะแนนและเหตุผล
 - **Style Search:** ค้นหาทรงผมจากชื่อหรือรหัส พร้อมรายชื่อคนที่ชอบ
-- **Like / Rate:** เพิ่มผู้ใช้ใหม่, บันทึกความชอบพร้อมคะแนน, ยกเลิกความชอบ
+- **Like / Rate:** บันทึกความชอบพร้อมคะแนน, ยกเลิกความชอบ (เห็นรูปทรงที่เลือก)
+- **Manage Data:** เพิ่ม / แก้ไข / ลบ คน, ทรงผม (พร้อมรูป) และความชอบ
 - **Graph Explorer:** กราฟรอบตัวผู้ใช้ 2 ทอด (ตัวเอง = ส้ม, คน = ฟ้า, ทรงผม = เขียว, แนะนำ = เส้นประม่วง)
 - **Admin / Setup:** สร้าง constraint + ข้อมูลตั้งต้น, บันทึกผลแนะนำลง Aura
 
 ---
 
-## 11) ทำไมผลแนะนำไม่ขึ้นใน Aura เอง
+## 11) CRUD ใน Cypher
+
+| งาน | Cypher ที่ใช้ |
+|---|---|
+| เพิ่ม (ห้ามซ้ำ) | `MERGE (p:Person {person_id:$id}) ON CREATE SET ...` แล้วเช็กว่าสร้างใหม่จริงไหม |
+| อ่าน | `MATCH (p:Person) RETURN ...` |
+| แก้ไข | `MATCH (h:Style {style_id:$id}) SET h.name = $name, h.image = coalesce($image, h.image)` |
+| ลบ node | `MATCH (p:Person {person_id:$id}) DETACH DELETE p` |
+| ลบเส้น | `MATCH (:Person {...})-[r:LIKES]->(:Style {...}) DELETE r` |
+| กำหนดทรงที่ชอบหลายทรงพร้อมกัน | ลบเส้นที่ไม่ได้เลือกด้วย `WHERE NOT h.style_id IN $style_ids` แล้ว `UNWIND $rows` + `MERGE` ทรงที่เลือก |
+
+`DETACH DELETE` จำเป็นเพราะ Neo4j ไม่ยอมลบ node ที่ยังมีเส้นติดอยู่
+
+## 12) รูปภาพ: ทำไมเก็บไฟล์ใน git แต่เก็บชื่อไฟล์ใน Neo4j
+
+- ฐานข้อมูลกราฟเหมาะกับความสัมพันธ์ ไม่เหมาะเก็บไฟล์ขนาดใหญ่
+- เก็บไฟล์ใน `images/` ของ repo ทำให้ deploy ขึ้น Streamlit Cloud พร้อมโค้ดได้เลย
+- node `Style` เก็บ `image: "H05.png"` แอปจะเปิดไฟล์จาก `images/H05.png`
+- Streamlit Cloud ไม่เก็บไฟล์ที่อัปโหลดถาวร รูปใหม่ต้อง commit เข้า git
+
+## 13) ทำไมผลแนะนำไม่ขึ้นใน Aura เอง
 
 ผลแนะนำคำนวณจาก query ตอนเปิดหน้าเว็บ ไม่ได้ถูกเก็บในฐานข้อมูล
 ต้องกด **บันทึกผลแนะนำลง Aura** ในหน้า Admin (หรือรัน `cypher/save_recommended.cypher`)
@@ -214,7 +235,7 @@ RETURN path
 
 ---
 
-## 12) Secrets, GitHub และ Deploy
+## 14) Secrets, GitHub และ Deploy
 
 1. สร้าง `.streamlit/secrets.toml` จากไฟล์ตัวอย่าง (ไฟล์นี้ถูก `.gitignore` กันไว้)
 2. `git add .` → `git commit` → `git push`
@@ -223,7 +244,7 @@ RETURN path
 
 ---
 
-## 13) แนวทางต่อยอด
+## 15) แนวทางต่อยอด
 
 1. เพิ่ม node `Category` (เช่น สั้น / กลาง / ยาว) และ `INTERESTED_IN` เพื่อเพิ่ม content signal
 2. เพิ่มข้อมูลคน เช่น เพศ, รูปหน้า แล้วแนะนำตามลักษณะ

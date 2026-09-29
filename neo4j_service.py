@@ -4,16 +4,30 @@
 app.py (หน้าเว็บ) จะเรียกใช้ฟังก์ชันจากไฟล์นี้ ไม่เขียน Cypher เอง
 
 Graph model:
+    (:Person {person_id, name})
+    (:Style {style_id, name, image})              image = ชื่อไฟล์ภาพในโฟลเดอร์ images/ เช่น H01.png
+                                                  (ถ้า node ไม่มี image จะใช้ <style_id>.png อัตโนมัติ)
     (:Person)-[:LIKES {score}]->(:Style)          คนชอบทรงผม พร้อมคะแนน 1-10
     (:Person)-[:RECOMMENDED {score, rank}]->(:Style)  ผลแนะนำที่บันทึกลง Aura (สร้างจากหน้า Admin)
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 from neo4j import GraphDatabase, RoutingControl
+
+
+# โฟลเดอร์เก็บรูปทรงผม (อยู่ใน git repo เดียวกับโค้ด)
+IMAGE_DIR = Path(__file__).parent / "images"
+ALLOWED_IMAGE_TYPES = ["png", "jpg", "jpeg", "webp"]
+
+
+class DataError(ValueError):
+    """ข้อผิดพลาดจากข้อมูลที่ผู้ใช้กรอก เช่น รหัสซ้ำ หรือหาข้อมูลไม่เจอ (หน้าเว็บจะแสดงเป็นข้อความเตือน)"""
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +42,7 @@ def _config() -> tuple[str, str, str, str | None]:
         cfg["username"],
         cfg["password"],
         # ถ้าไม่ได้ใส่ database ใน secrets ให้เป็น None = ใช้ home database ของบัญชี
-        cfg.get("database", "77fca5d4"),
+        cfg.get("database") or None,
     )
 
 
@@ -111,6 +125,10 @@ STYLES = [
     {"style_id": "H12", "name": "ซอยสั้นแสกกลาง"},
 ]
 
+# ทรงผมตั้งต้นใช้รูป images/<รหัส>.png
+for _s in STYLES:
+    _s["image"] = f"{_s['style_id']}.png"
+
 # [รหัสคน, รหัสทรงผม, คะแนนความชอบ]
 LIKES = [
     ["P01", "H02", 8], ["P01", "H05", 9], ["P01", "H11", 8],
@@ -154,7 +172,9 @@ def seed_demo_data() -> None:
         """
         UNWIND $rows AS row
         MERGE (h:Style {style_id: row.style_id})
-        SET h.name = row.name
+        SET h.name = row.name,
+            // coalesce = ถ้าเคยเปลี่ยนรูปไว้แล้ว ให้ใช้รูปเดิม ไม่ทับ
+            h.image = coalesce(h.image, row.image)
         """,
         {"rows": STYLES},
         write=True,
@@ -187,7 +207,7 @@ def get_people() -> list[dict[str, Any]]:
 def get_styles() -> list[dict[str, Any]]:
     """รายชื่อทรงผมทั้งหมด"""
     return query(
-        "MATCH (h:Style) RETURN h.style_id AS style_id, h.name AS name ORDER BY h.style_id"
+        "MATCH (h:Style) RETURN h.style_id AS style_id, h.name AS name, coalesce(h.image, h.style_id + '.png') AS image ORDER BY h.style_id"
     )
 
 
@@ -217,7 +237,7 @@ def get_profile(person_id: str) -> dict[str, Any] | None:
         WITH p, r, h
         ORDER BY r.score DESC, h.style_id
         RETURN p.person_id AS person_id, p.name AS name,
-               collect({style_id: h.style_id, style: h.name, score: r.score}) AS liked
+               collect({style_id: h.style_id, style: h.name, image: coalesce(h.image, h.style_id + '.png'), score: r.score}) AS liked
         """,
         {"person_id": person_id},
     )
@@ -280,7 +300,7 @@ WITH h, similar_people, similar_names, shared_styles, shared_names,
 // ตัดทรงที่ไม่มีหลักฐานอะไรเลย (ไม่มีใครชอบ)
 WHERE similar_people > 0 OR popularity > 0
 
-RETURN h.style_id AS style_id, h.name AS style,
+RETURN h.style_id AS style_id, h.name AS style, coalesce(h.image, h.style_id + '.png') AS image,
        similar_people, similar_names, shared_styles, shared_names,
        popularity, round(avg_score * 100) / 100.0 AS avg_score,
        round(score * 100) / 100.0 AS score
@@ -336,7 +356,7 @@ def save_recommendations(top_n: int = 3) -> int:
 
 
 # ---------------------------------------------------------------------------
-# ค้นหา / บันทึกข้อมูล
+# ค้นหา
 # ---------------------------------------------------------------------------
 
 def search_styles(keyword: str = "") -> list[dict[str, Any]]:
@@ -348,7 +368,7 @@ def search_styles(keyword: str = "") -> list[dict[str, Any]]:
            OR toLower(h.name) CONTAINS toLower($keyword)
            OR toLower(h.style_id) CONTAINS toLower($keyword)
         OPTIONAL MATCH (p:Person)-[r:LIKES]->(h)
-        RETURN h.style_id AS style_id, h.name AS style,
+        RETURN h.style_id AS style_id, h.name AS style, coalesce(h.image, h.style_id + '.png') AS image,
                count(r) AS fans,
                round(coalesce(avg(r.score), 0) * 100) / 100.0 AS avg_score,
                collect(p.name) AS liked_by
@@ -358,20 +378,191 @@ def search_styles(keyword: str = "") -> list[dict[str, Any]]:
     )
 
 
-def add_person(person_id: str, name: str) -> None:
-    """เพิ่มคนใหม่ (ถ้ารหัสมีอยู่แล้วจะอัปเดตชื่อแทน)"""
-    query(
+# ---------------------------------------------------------------------------
+# ตรวจสอบข้อมูลที่ผู้ใช้กรอก
+# ---------------------------------------------------------------------------
+
+def _clean_id(value: str, label: str) -> str:
+    """รหัสต้องเป็น A-Z, 0-9, _ หรือ - เท่านั้น (เพราะนำไปตั้งชื่อไฟล์รูปด้วย)"""
+    value = (value or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9_-]{1,20}", value):
+        raise DataError(f"{label}ต้องเป็นตัวอักษรอังกฤษ/ตัวเลข ไม่เกิน 20 ตัว เช่น P16 หรือ H13")
+    return value
+
+
+def _clean_name(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        raise DataError("กรุณากรอกชื่อ")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# CRUD: Person (เพิ่ม / แก้ไข / ลบ คน)
+# ---------------------------------------------------------------------------
+
+def create_person(person_id: str, name: str) -> str:
+    """เพิ่มคนใหม่ ถ้ารหัสซ้ำจะแจ้งเตือน (ไม่เขียนทับของเดิม)"""
+    person_id = _clean_id(person_id, "รหัสคน")
+    name = _clean_name(name)
+    rows = query(
         """
+        // ON CREATE = ทำเฉพาะตอนสร้างใหม่, created บอกว่าสร้างใหม่หรือมีอยู่แล้ว
         MERGE (p:Person {person_id:$person_id})
-        SET p.name = $name
+        ON CREATE SET p.name = $name, p._new = true
+        WITH p, coalesce(p._new, false) AS created
+        REMOVE p._new
+        RETURN created
         """,
-        {"person_id": person_id.strip().upper(), "name": name.strip()},
+        {"person_id": person_id, "name": name},
         write=True,
+    )
+    if not rows[0]["created"]:
+        raise DataError(f"มีรหัส {person_id} อยู่แล้ว")
+    return person_id
+
+
+def update_person(person_id: str, name: str) -> None:
+    """แก้ไขชื่อคน (รหัสเป็น primary key จึงไม่ให้แก้)"""
+    rows = query(
+        """
+        MATCH (p:Person {person_id:$person_id})
+        SET p.name = $name
+        RETURN count(p) AS n
+        """,
+        {"person_id": person_id, "name": _clean_name(name)},
+        write=True,
+    )
+    if rows[0]["n"] == 0:
+        raise DataError(f"ไม่พบ {person_id}")
+
+
+def delete_person(person_id: str) -> None:
+    """ลบคน พร้อมเส้น LIKES / RECOMMENDED ทั้งหมดของคนนี้
+
+    DETACH DELETE = ลบเส้นที่ติดอยู่ก่อนแล้วค่อยลบ node (DELETE เฉย ๆ จะ error ถ้ายังมีเส้น)
+    """
+    rows = query(
+        """
+        MATCH (p:Person {person_id:$person_id})
+        DETACH DELETE p
+        RETURN count(*) AS n
+        """,
+        {"person_id": person_id},
+        write=True,
+    )
+    if rows[0]["n"] == 0:
+        raise DataError(f"ไม่พบ {person_id}")
+
+
+# ---------------------------------------------------------------------------
+# รูปภาพทรงผม (ไฟล์อยู่ใน images/ ในฐานข้อมูลเก็บแค่ชื่อไฟล์)
+# ---------------------------------------------------------------------------
+
+def image_path(image: str | None) -> Path | None:
+    """แปลงชื่อไฟล์ใน node เป็น path จริง คืน None ถ้าไม่มีไฟล์"""
+    if not image:
+        return None
+    path = IMAGE_DIR / Path(image).name      # .name กันการใส่ ../ ออกนอกโฟลเดอร์
+    return path if path.is_file() else None
+
+
+def save_style_image(style_id: str, data: bytes, filename: str) -> str:
+    """บันทึกไฟล์รูปลงโฟลเดอร์ images/ ตั้งชื่อตามรหัสทรง เช่น H13.jpg แล้วคืนชื่อไฟล์"""
+    style_id = _clean_id(style_id, "รหัสทรงผม")
+    ext = Path(filename).suffix.lower().lstrip(".")
+    if ext not in ALLOWED_IMAGE_TYPES:
+        raise DataError("รองรับเฉพาะไฟล์ " + ", ".join(ALLOWED_IMAGE_TYPES))
+    IMAGE_DIR.mkdir(exist_ok=True)
+    # ลบรูปเก่าของทรงนี้ที่เป็นนามสกุลอื่น จะได้ไม่มีไฟล์ค้าง
+    for old in ALLOWED_IMAGE_TYPES:
+        old_path = IMAGE_DIR / f"{style_id}.{old}"
+        if old != ext and old_path.exists():
+            old_path.unlink()
+    new_name = f"{style_id}.{ext}"
+    (IMAGE_DIR / new_name).write_bytes(data)
+    return new_name
+
+
+# ---------------------------------------------------------------------------
+# CRUD: Style (เพิ่ม / แก้ไข / ลบ ทรงผม)
+# ---------------------------------------------------------------------------
+
+def create_style(style_id: str, name: str, image: str | None = None) -> str:
+    """เพิ่มทรงผมใหม่ ถ้ารหัสซ้ำจะแจ้งเตือน"""
+    style_id = _clean_id(style_id, "รหัสทรงผม")
+    name = _clean_name(name)
+    rows = query(
+        """
+        MERGE (h:Style {style_id:$style_id})
+        ON CREATE SET h.name = $name, h.image = $image, h._new = true
+        WITH h, coalesce(h._new, false) AS created
+        REMOVE h._new
+        RETURN created
+        """,
+        {"style_id": style_id, "name": name, "image": image},
+        write=True,
+    )
+    if not rows[0]["created"]:
+        raise DataError(f"มีรหัส {style_id} อยู่แล้ว")
+    return style_id
+
+
+def update_style(style_id: str, name: str, image: str | None = None) -> None:
+    """แก้ไขชื่อทรงผม และเปลี่ยนรูปถ้าส่ง image มา (image=None = ใช้รูปเดิม)"""
+    rows = query(
+        """
+        MATCH (h:Style {style_id:$style_id})
+        SET h.name = $name,
+            h.image = coalesce($image, h.image)
+        RETURN count(h) AS n
+        """,
+        {"style_id": style_id, "name": _clean_name(name), "image": image},
+        write=True,
+    )
+    if rows[0]["n"] == 0:
+        raise DataError(f"ไม่พบ {style_id}")
+
+
+def delete_style(style_id: str, delete_image_file: bool = True) -> None:
+    """ลบทรงผม พร้อมเส้นทั้งหมดที่ชี้มาหาทรงนี้ และลบไฟล์รูปถ้าเลือก"""
+    rows = query(
+        """
+        MATCH (h:Style {style_id:$style_id})
+        WITH h, coalesce(h.image, h.style_id + '.png') AS image
+        DETACH DELETE h
+        RETURN image
+        """,
+        {"style_id": style_id},
+        write=True,
+    )
+    if not rows:
+        raise DataError(f"ไม่พบ {style_id}")
+    path = image_path(rows[0]["image"])
+    if delete_image_file and path:
+        path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# CRUD: LIKES (เพิ่ม / แก้คะแนน / ลบ ความชอบ)
+# ---------------------------------------------------------------------------
+
+def get_all_likes() -> list[dict[str, Any]]:
+    """ความชอบทั้งหมด ใช้แสดงตารางในหน้าจัดการข้อมูล"""
+    return query(
+        """
+        MATCH (p:Person)-[r:LIKES]->(h:Style)
+        RETURN p.person_id AS person_id, p.name AS person,
+               h.style_id AS style_id, h.name AS style, r.score AS score
+        ORDER BY person_id, style_id
+        """
     )
 
 
 def record_like(person_id: str, style_id: str, score: int) -> None:
-    """บันทึกว่าคนนี้ชอบทรงนี้ด้วยคะแนนเท่าไร (ชอบซ้ำ = อัปเดตคะแนน ไม่สร้างเส้นซ้ำ)"""
+    """เพิ่มความชอบ หรือแก้คะแนนถ้ามีอยู่แล้ว (MERGE = ไม่สร้างเส้นซ้ำ)"""
+    if not 1 <= int(score) <= 10:
+        raise DataError("คะแนนต้องอยู่ระหว่าง 1–10")
     query(
         """
         MATCH (p:Person {person_id:$person_id}), (h:Style {style_id:$style_id})
@@ -379,6 +570,38 @@ def record_like(person_id: str, style_id: str, score: int) -> None:
         SET r.score = $score
         """,
         {"person_id": person_id, "style_id": style_id, "score": int(score)},
+        write=True,
+    )
+
+
+def set_person_likes(person_id: str, likes: dict[str, int]) -> None:
+    """กำหนดทรงที่คนนี้ชอบทั้งหมดในครั้งเดียว (ใช้ตอนเพิ่มคนใหม่ / แก้ไขคน)
+
+    likes = {รหัสทรง: คะแนน} เช่น {"H02": 8, "H05": 9}
+    - ทรงที่อยู่ใน likes      -> สร้างเส้น LIKES หรืออัปเดตคะแนน
+    - ทรงที่เคยชอบแต่ไม่อยู่แล้ว -> ลบเส้น LIKES ทิ้ง
+    """
+    for style_id, score in likes.items():
+        if not 1 <= int(score) <= 10:
+            raise DataError(f"คะแนนของ {style_id} ต้องอยู่ระหว่าง 1–10")
+    rows = [{"style_id": sid, "score": int(score)} for sid, score in likes.items()]
+    query(
+        """
+        MATCH (p:Person {person_id:$person_id})
+
+        // 1) ลบความชอบเดิมที่ไม่ได้เลือกแล้ว
+        OPTIONAL MATCH (p)-[old:LIKES]->(h:Style)
+        WHERE NOT h.style_id IN $style_ids
+        DELETE old
+
+        // 2) สร้าง/อัปเดตความชอบที่เลือก (UNWIND แตก list ทีละทรง)
+        WITH DISTINCT p
+        UNWIND $rows AS row
+        MATCH (h:Style {style_id: row.style_id})
+        MERGE (p)-[r:LIKES]->(h)
+        SET r.score = row.score
+        """,
+        {"person_id": person_id, "style_ids": list(likes), "rows": rows},
         write=True,
     )
 
