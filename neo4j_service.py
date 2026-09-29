@@ -42,7 +42,7 @@ def _config() -> tuple[str, str, str, str | None]:
         cfg["username"],
         cfg["password"],
         # ถ้าไม่ได้ใส่ database ใน secrets ให้เป็น None = ใช้ home database ของบัญชี
-        cfg.get("database") or None,
+        cfg.get("database", "77fca5d4"),
     )
 
 
