@@ -1,11 +1,7 @@
-CREATE CONSTRAINT student_id_unique IF NOT EXISTS
-FOR (s:Student) REQUIRE s.student_id IS UNIQUE;
+// รหัสคนห้ามซ้ำ
+CREATE CONSTRAINT person_id_unique IF NOT EXISTS
+FOR (p:Person) REQUIRE p.person_id IS UNIQUE;
 
-CREATE CONSTRAINT book_id_unique IF NOT EXISTS
-FOR (b:Book) REQUIRE b.book_id IS UNIQUE;
-
-CREATE CONSTRAINT author_id_unique IF NOT EXISTS
-FOR (a:Author) REQUIRE a.author_id IS UNIQUE;
-
-CREATE CONSTRAINT category_name_unique IF NOT EXISTS
-FOR (c:Category) REQUIRE c.name IS UNIQUE;
+// รหัสทรงผมห้ามซ้ำ
+CREATE CONSTRAINT style_id_unique IF NOT EXISTS
+FOR (h:Style) REQUIRE h.style_id IS UNIQUE;

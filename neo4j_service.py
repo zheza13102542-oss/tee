@@ -1,3 +1,13 @@
+"""ชั้นติดต่อฐานข้อมูล (Database access layer)
+
+ไฟล์นี้รวมทุกคำสั่ง Cypher ของระบบแนะนำทรงผมไว้ที่เดียว
+app.py (หน้าเว็บ) จะเรียกใช้ฟังก์ชันจากไฟล์นี้ ไม่เขียน Cypher เอง
+
+Graph model:
+    (:Person)-[:LIKES {score}]->(:Style)          คนชอบทรงผม พร้อมคะแนน 1-10
+    (:Person)-[:RECOMMENDED {score, rank}]->(:Style)  ผลแนะนำที่บันทึกลง Aura (สร้างจากหน้า Admin)
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,19 +16,25 @@ import streamlit as st
 from neo4j import GraphDatabase, RoutingControl
 
 
-def _config() -> tuple[str, str, str, str]:
+# ---------------------------------------------------------------------------
+# การเชื่อมต่อ
+# ---------------------------------------------------------------------------
+
+def _config() -> tuple[str, str, str, str | None]:
+    """อ่านค่าเชื่อมต่อจาก Streamlit Secrets (ไม่เขียนรหัสผ่านไว้ในโค้ด)"""
     cfg = st.secrets["neo4j"]
     return (
         cfg["uri"],
         cfg["username"],
         cfg["password"],
-        cfg.get("database", "77fca5d4"),
+        # ถ้าไม่ได้ใส่ database ใน secrets ให้เป็น None = ใช้ home database ของบัญชี
+        cfg.get("database") or None,
     )
 
 
 @st.cache_resource(show_spinner=False)
 def get_driver():
-    """Create one thread-safe Neo4j Driver for the Streamlit process."""
+    """สร้าง Driver ตัวเดียวแล้ว cache ไว้ ทุกหน้าใช้ร่วมกัน ไม่ต้องเชื่อมต่อใหม่ทุกครั้ง"""
     uri, username, password, _ = _config()
     driver = GraphDatabase.driver(uri, auth=(username, password))
     driver.verify_connectivity()
@@ -26,7 +42,11 @@ def get_driver():
 
 
 def query(cypher: str, parameters: dict[str, Any] | None = None, *, write: bool = False) -> list[dict[str, Any]]:
-    """Execute parameterized Cypher and return rows as dictionaries."""
+    """รัน Cypher แบบส่ง parameter แล้วคืนผลเป็น list ของ dict
+
+    write=True  ใช้กับคำสั่งที่แก้ข้อมูล (MERGE, SET, DELETE)
+    write=False ใช้กับคำสั่งอ่านอย่างเดียว (MATCH ... RETURN)
+    """
     _, _, _, database = _config()
     records, _, _ = get_driver().execute_query(
         cypher,
@@ -38,298 +58,365 @@ def query(cypher: str, parameters: dict[str, Any] | None = None, *, write: bool 
 
 
 def ping() -> bool:
+    """ทดสอบว่าเชื่อมต่อฐานข้อมูลได้"""
     rows = query("RETURN 1 AS ok")
     return bool(rows and rows[0]["ok"] == 1)
 
 
+# ---------------------------------------------------------------------------
+# Schema และข้อมูลตั้งต้น
+# ---------------------------------------------------------------------------
+
 def create_schema() -> None:
+    """สร้าง constraint ให้รหัสคนและรหัสทรงผมห้ามซ้ำ (IF NOT EXISTS = รันซ้ำได้)"""
     statements = [
-        "CREATE CONSTRAINT student_id_unique IF NOT EXISTS FOR (s:Student) REQUIRE s.student_id IS UNIQUE",
-        "CREATE CONSTRAINT book_id_unique IF NOT EXISTS FOR (b:Book) REQUIRE b.book_id IS UNIQUE",
-        "CREATE CONSTRAINT author_id_unique IF NOT EXISTS FOR (a:Author) REQUIRE a.author_id IS UNIQUE",
-        "CREATE CONSTRAINT category_name_unique IF NOT EXISTS FOR (c:Category) REQUIRE c.name IS UNIQUE",
+        "CREATE CONSTRAINT person_id_unique IF NOT EXISTS FOR (p:Person) REQUIRE p.person_id IS UNIQUE",
+        "CREATE CONSTRAINT style_id_unique IF NOT EXISTS FOR (h:Style) REQUIRE h.style_id IS UNIQUE",
     ]
     for stmt in statements:
         query(stmt, write=True)
 
 
+# ข้อมูลชุดเดียวกับใน notebook 033_HairStyle (P01-P15, H01-H12)
+PEOPLE = [
+    {"person_id": "P01", "name": "ณรงค์ศักดิ์"},
+    {"person_id": "P02", "name": "สมชาย"},
+    {"person_id": "P03", "name": "สมหญิง"},
+    {"person_id": "P04", "name": "ปรีชา"},
+    {"person_id": "P05", "name": "กมลชนก"},
+    {"person_id": "P06", "name": "ธนากร"},
+    {"person_id": "P07", "name": "ศิริพร"},
+    {"person_id": "P08", "name": "วิชัย"},
+    {"person_id": "P09", "name": "นภัสสร"},
+    {"person_id": "P10", "name": "อนุชา"},
+    {"person_id": "P11", "name": "พิมพ์ชนก"},
+    {"person_id": "P12", "name": "ชัยวัฒน์"},
+    {"person_id": "P13", "name": "ญาดา"},
+    {"person_id": "P14", "name": "ภาณุพงศ์"},
+    {"person_id": "P15", "name": "อริสา"},
+]
+
+STYLES = [
+    {"style_id": "H01", "name": "ซอยสั้นเลเยอร์"},
+    {"style_id": "H02", "name": "บ๊อบสั้น"},
+    {"style_id": "H03", "name": "บ๊อบยาว (Lob)"},
+    {"style_id": "H04", "name": "ยาวตรงแสกกลาง"},
+    {"style_id": "H05", "name": "ยาวดัดลอน"},
+    {"style_id": "H06", "name": "หน้าม้าซีทรู"},
+    {"style_id": "H07", "name": "รองทรงสูง"},
+    {"style_id": "H08", "name": "เกรียนสั้น"},
+    {"style_id": "H09", "name": "วูล์ฟคัท"},
+    {"style_id": "H10", "name": "มัดจุกสูง"},
+    {"style_id": "H11", "name": "ดัดโครงสร้าง"},
+    {"style_id": "H12", "name": "ซอยสั้นแสกกลาง"},
+]
+
+# [รหัสคน, รหัสทรงผม, คะแนนความชอบ]
+LIKES = [
+    ["P01", "H02", 8], ["P01", "H05", 9], ["P01", "H11", 8],
+    ["P02", "H04", 9], ["P02", "H01", 7],
+    ["P03", "H09", 9], ["P03", "H03", 7],
+    ["P04", "H02", 8], ["P04", "H06", 9],
+    ["P05", "H03", 8], ["P05", "H05", 7], ["P05", "H10", 7],
+    ["P06", "H09", 9], ["P06", "H12", 8],
+    ["P07", "H02", 9], ["P07", "H06", 8],
+    ["P08", "H05", 8], ["P08", "H03", 7], ["P08", "H07", 9], ["P08", "H02", 8],
+    ["P09", "H10", 7], ["P09", "H06", 8],
+    ["P10", "H05", 9], ["P10", "H12", 8], ["P10", "H08", 7],
+    ["P11", "H01", 8], ["P11", "H02", 7],
+    ["P12", "H05", 9], ["P12", "H09", 8], ["P12", "H12", 7], ["P12", "H11", 8],
+    ["P13", "H04", 8], ["P13", "H11", 9],
+    ["P14", "H09", 8], ["P14", "H08", 7], ["P14", "H12", 8],
+    ["P15", "H05", 7], ["P15", "H04", 9],
+]
+
+
 def seed_demo_data() -> None:
-    """Idempotent sample dataset: safe to run more than once."""
+    """ใส่ข้อมูลตั้งต้นทั้งหมด ใช้ MERGE จึงกดซ้ำได้ ไม่เกิด node/เส้นซ้ำ
+
+    ถ้าเคยรัน notebook ใส่ข้อมูลไว้ใน Aura แล้ว ฟังก์ชันนี้จะแค่อัปเดตค่าเดิม
+    """
     create_schema()
 
-    students = [
-        {"student_id": "S001", "name": "Anan", "major": "Computer Science", "year": 2},
-        {"student_id": "S002", "name": "Mali", "major": "Computer Science", "year": 2},
-        {"student_id": "S003", "name": "Krit", "major": "Information Technology", "year": 3},
-        {"student_id": "S004", "name": "Nida", "major": "Data Science", "year": 2},
-        {"student_id": "S005", "name": "Ploy", "major": "Business Computer", "year": 3},
-        {"student_id": "S006", "name": "Ton", "major": "Computer Science", "year": 1},
-    ]
-    books = [
-        {"book_id": "B101", "title": "Python Programming", "year": 2025},
-        {"book_id": "B102", "title": "Artificial Intelligence Basics", "year": 2026},
-        {"book_id": "B103", "title": "Data Science for Students", "year": 2025},
-        {"book_id": "B104", "title": "Introduction to Database", "year": 2024},
-        {"book_id": "B105", "title": "Graph Databases with Neo4j", "year": 2026},
-        {"book_id": "B106", "title": "Machine Learning Foundations", "year": 2025},
-        {"book_id": "B107", "title": "Web Application Development", "year": 2024},
-        {"book_id": "B108", "title": "Algorithms and Problem Solving", "year": 2023},
-    ]
-    authors = [
-        {"author_id": "A01", "name": "Somchai Tech"},
-        {"author_id": "A02", "name": "Narin Data"},
-        {"author_id": "A03", "name": "Kanya AI"},
-        {"author_id": "A04", "name": "Preecha DB"},
-    ]
-    categories = ["Programming", "AI", "Data Science", "Database", "Web Development", "Algorithms"]
-
+    # สร้าง/อัปเดต node คน
     query(
         """
         UNWIND $rows AS row
-        MERGE (s:Student {student_id: row.student_id})
-        SET s.name = row.name, s.major = row.major, s.year = row.year
+        MERGE (p:Person {person_id: row.person_id})
+        SET p.name = row.name
         """,
-        {"rows": students},
-        write=True,
-    )
-    query(
-        """
-        UNWIND $rows AS row
-        MERGE (b:Book {book_id: row.book_id})
-        SET b.title = row.title, b.year = row.year
-        """,
-        {"rows": books},
-        write=True,
-    )
-    query(
-        """
-        UNWIND $rows AS row
-        MERGE (a:Author {author_id: row.author_id})
-        SET a.name = row.name
-        """,
-        {"rows": authors},
-        write=True,
-    )
-    query(
-        "UNWIND $rows AS name MERGE (:Category {name:name})",
-        {"rows": categories},
+        {"rows": PEOPLE},
         write=True,
     )
 
-    friendships = [
-        ["S001", "S002"], ["S001", "S003"], ["S001", "S004"],
-        ["S002", "S005"], ["S003", "S004"], ["S004", "S006"],
-    ]
+    # สร้าง/อัปเดต node ทรงผม
     query(
         """
         UNWIND $rows AS row
-        MATCH (a:Student {student_id: row[0]}), (b:Student {student_id: row[1]})
-        MERGE (a)-[:FRIEND_OF]->(b)
+        MERGE (h:Style {style_id: row.style_id})
+        SET h.name = row.name
         """,
-        {"rows": friendships},
+        {"rows": STYLES},
         write=True,
     )
 
-    borrows = [
-        {"s": "S001", "b": "B101", "date": "2026-08-01", "rating": 4.0},
-        {"s": "S001", "b": "B108", "date": "2026-08-14", "rating": 4.0},
-        {"s": "S002", "b": "B103", "date": "2026-08-05", "rating": 5.0},
-        {"s": "S002", "b": "B102", "date": "2026-08-18", "rating": 4.0},
-        {"s": "S003", "b": "B103", "date": "2026-08-07", "rating": 4.0},
-        {"s": "S003", "b": "B104", "date": "2026-08-20", "rating": 5.0},
-        {"s": "S004", "b": "B105", "date": "2026-08-09", "rating": 5.0},
-        {"s": "S004", "b": "B103", "date": "2026-08-24", "rating": 5.0},
-        {"s": "S005", "b": "B107", "date": "2026-08-11", "rating": 4.0},
-        {"s": "S006", "b": "B106", "date": "2026-08-12", "rating": 4.0},
-    ]
+    # สร้างเส้น LIKES (row[0] = คน, row[1] = ทรงผม, row[2] = คะแนน)
     query(
         """
         UNWIND $rows AS row
-        MATCH (s:Student {student_id: row.s}), (b:Book {book_id: row.b})
-        MERGE (s)-[r:BORROWED]->(b)
-        SET r.borrow_date = date(row.date), r.rating = row.rating
+        MATCH (p:Person {person_id: row[0]}), (h:Style {style_id: row[1]})
+        MERGE (p)-[r:LIKES]->(h)
+        SET r.score = row[2]
         """,
-        {"rows": borrows},
-        write=True,
-    )
-
-    interests = [
-        ["S001", "Programming"], ["S001", "Database"],
-        ["S002", "AI"], ["S002", "Data Science"],
-        ["S003", "Database"], ["S003", "Data Science"],
-        ["S004", "AI"], ["S004", "Data Science"],
-        ["S005", "Web Development"], ["S006", "Programming"],
-    ]
-    query(
-        """
-        UNWIND $rows AS row
-        MATCH (s:Student {student_id: row[0]}), (c:Category {name: row[1]})
-        MERGE (s)-[:INTERESTED_IN]->(c)
-        """,
-        {"rows": interests},
-        write=True,
-    )
-
-    book_categories = [
-        ["B101", "Programming"], ["B102", "AI"], ["B103", "Data Science"],
-        ["B104", "Database"], ["B105", "Database"], ["B106", "AI"],
-        ["B106", "Data Science"], ["B107", "Web Development"],
-        ["B108", "Algorithms"], ["B108", "Programming"],
-    ]
-    query(
-        """
-        UNWIND $rows AS row
-        MATCH (b:Book {book_id: row[0]}), (c:Category {name: row[1]})
-        MERGE (b)-[:IN_CATEGORY]->(c)
-        """,
-        {"rows": book_categories},
-        write=True,
-    )
-
-    wrote = [
-        ["A01", "B101"], ["A03", "B102"], ["A02", "B103"], ["A04", "B104"],
-        ["A04", "B105"], ["A03", "B106"], ["A01", "B107"], ["A01", "B108"],
-    ]
-    query(
-        """
-        UNWIND $rows AS row
-        MATCH (a:Author {author_id: row[0]}), (b:Book {book_id: row[1]})
-        MERGE (a)-[:WROTE]->(b)
-        """,
-        {"rows": wrote},
+        {"rows": LIKES},
         write=True,
     )
 
 
-def get_students() -> list[dict[str, Any]]:
-    return query("MATCH (s:Student) RETURN s.student_id AS student_id, s.name AS name, s.major AS major, s.year AS year ORDER BY s.student_id")
+# ---------------------------------------------------------------------------
+# อ่านข้อมูลสำหรับหน้าเว็บ
+# ---------------------------------------------------------------------------
+
+def get_people() -> list[dict[str, Any]]:
+    """รายชื่อคนทั้งหมด ใช้ทำ dropdown เลือกผู้ใช้"""
+    return query(
+        "MATCH (p:Person) RETURN p.person_id AS person_id, p.name AS name ORDER BY p.person_id"
+    )
+
+
+def get_styles() -> list[dict[str, Any]]:
+    """รายชื่อทรงผมทั้งหมด"""
+    return query(
+        "MATCH (h:Style) RETURN h.style_id AS style_id, h.name AS name ORDER BY h.style_id"
+    )
 
 
 def get_dashboard_metrics() -> dict[str, int]:
+    """ตัวเลขสรุปหน้า Dashboard
+
+    ใช้ COUNT { } แยกกันแต่ละตัว ถ้ายังไม่มีเส้นประเภทไหนเลยก็ได้ 0 (ไม่ทำให้ทั้งแถวหาย)
+    """
     rows = query(
         """
-        MATCH (s:Student) WITH count(s) AS students
-        MATCH (b:Book) WITH students, count(b) AS books
-        MATCH ()-[r:BORROWED]->() WITH students, books, count(r) AS borrows
-        MATCH ()-[f:FRIEND_OF]->()
-        RETURN students, books, borrows, count(f) AS friendships
+        RETURN
+            COUNT { (:Person) } AS people,
+            COUNT { (:Style) } AS styles,
+            COUNT { ()-[:LIKES]->() } AS likes,
+            COUNT { ()-[:RECOMMENDED]->() } AS recommended
         """
     )
-    return rows[0] if rows else {"students": 0, "books": 0, "borrows": 0, "friendships": 0}
+    return rows[0] if rows else {"people": 0, "styles": 0, "likes": 0, "recommended": 0}
 
 
-def get_profile(student_id: str) -> dict[str, Any] | None:
+def get_profile(person_id: str) -> dict[str, Any] | None:
+    """ข้อมูลคน 1 คน พร้อมรายการทรงที่ชอบ"""
     rows = query(
         """
-        MATCH (s:Student {student_id:$student_id})
-        OPTIONAL MATCH (s)-[:INTERESTED_IN]->(c:Category)
-        OPTIONAL MATCH (s)-[:BORROWED]->(b:Book)
-        RETURN s.student_id AS student_id, s.name AS name, s.major AS major, s.year AS year,
-               collect(DISTINCT c.name) AS interests,
-               collect(DISTINCT {book_id:b.book_id, title:b.title}) AS borrowed
+        MATCH (p:Person {person_id:$person_id})
+        OPTIONAL MATCH (p)-[r:LIKES]->(h:Style)
+        WITH p, r, h
+        ORDER BY r.score DESC, h.style_id
+        RETURN p.person_id AS person_id, p.name AS name,
+               collect({style_id: h.style_id, style: h.name, score: r.score}) AS liked
         """,
-        {"student_id": student_id},
+        {"person_id": person_id},
     )
     if not rows:
         return None
     row = rows[0]
-    row["borrowed"] = [x for x in row["borrowed"] if x.get("book_id")]
+    # ถ้ายังไม่ชอบทรงไหนเลย collect จะได้ dict ที่ค่าเป็น null ให้กรองทิ้ง
+    row["liked"] = [x for x in row["liked"] if x.get("style_id")]
     return row
 
 
-def recommend_books(student_id: str, limit: int = 8) -> list[dict[str, Any]]:
-    """Explainable hybrid score: social + interests + popularity + ratings."""
+def style_popularity() -> list[dict[str, Any]]:
+    """ทรงผมแต่ละทรงมีคนชอบกี่คน และคะแนนเฉลี่ยเท่าไร (ทรงที่ไม่มีคนชอบก็แสดง)"""
     return query(
         """
-        MATCH (u:Student {student_id:$student_id})
-        MATCH (b:Book)
-        WHERE NOT (u)-[:BORROWED]->(b)
-
-        OPTIONAL MATCH (u)-[:FRIEND_OF]-(f:Student)-[:BORROWED]->(b)
-        WITH u, b, count(DISTINCT f) AS friend_count,
-             [x IN collect(DISTINCT f.name) WHERE x IS NOT NULL][0..3] AS friend_names
-
-        OPTIONAL MATCH (u)-[:INTERESTED_IN]->(c:Category)<-[:IN_CATEGORY]-(b)
-        WITH b, friend_count, friend_names,
-             count(DISTINCT c) AS interest_matches,
-             [x IN collect(DISTINCT c.name) WHERE x IS NOT NULL] AS matched_categories
-
-        OPTIONAL MATCH (:Student)-[br:BORROWED]->(b)
-        WITH b, friend_count, friend_names, interest_matches, matched_categories,
-             count(br) AS popularity,
-             avg(br.rating) AS avg_rating
-
-        WITH b, friend_count, friend_names, interest_matches, matched_categories,
-             popularity, coalesce(avg_rating, 0.0) AS avg_rating,
-             (friend_count * 3.0) + (interest_matches * 2.0) +
-             (popularity * 0.20) + (coalesce(avg_rating, 0.0) * 0.50) AS score
-        WHERE friend_count > 0 OR interest_matches > 0 OR popularity > 0
-
-        OPTIONAL MATCH (a:Author)-[:WROTE]->(b)
-        OPTIONAL MATCH (b)-[:IN_CATEGORY]->(allc:Category)
-        RETURN b.book_id AS book_id, b.title AS title, b.year AS year,
-               collect(DISTINCT a.name) AS authors,
-               collect(DISTINCT allc.name) AS categories,
-               friend_count, friend_names, interest_matches, matched_categories,
-               popularity, round(avg_rating * 100) / 100.0 AS avg_rating,
-               round(score * 100) / 100.0 AS score
-        ORDER BY score DESC, b.title
-        LIMIT $limit
-        """,
-        {"student_id": student_id, "limit": int(limit)},
+        MATCH (h:Style)
+        OPTIONAL MATCH (:Person)-[r:LIKES]->(h)
+        RETURN h.style_id AS style_id, h.name AS style,
+               count(r) AS fans,
+               round(coalesce(avg(r.score), 0) * 100) / 100.0 AS avg_score
+        ORDER BY fans DESC, avg_score DESC, style_id
+        """
     )
 
 
-def search_books(keyword: str = "", category: str | None = None) -> list[dict[str, Any]]:
+# ---------------------------------------------------------------------------
+# ระบบแนะนำทรงผม
+# ---------------------------------------------------------------------------
+
+RECOMMEND_CYPHER = """
+// เริ่มจากคนที่ต้องการคำแนะนำ และทรงผมทุกทรงที่เขายังไม่ได้ชอบ
+MATCH (u:Person {person_id:$person_id})
+MATCH (h:Style)
+WHERE NOT EXISTS { (u)-[:LIKES]->(h) }
+
+// 1) Collaborative signal: คนที่ชอบทรงเดียวกับ u และชอบทรง h ด้วย
+//    u -> ทรงที่ชอบ (shared) <- คนอื่น (o) -> h
+OPTIONAL MATCH (u)-[:LIKES]->(shared:Style)<-[:LIKES]-(o:Person)-[:LIKES]->(h)
+WHERE o <> u
+WITH h,
+     count(DISTINCT o) AS similar_people,
+     [x IN collect(DISTINCT o.name) WHERE x IS NOT NULL][0..3] AS similar_names,
+     count(DISTINCT shared) AS shared_styles,
+     [x IN collect(DISTINCT shared.name) WHERE x IS NOT NULL] AS shared_names
+
+// 2) Popularity + score signal: ทรง h มีคนชอบกี่คน คะแนนเฉลี่ยเท่าไร
+OPTIONAL MATCH (:Person)-[l:LIKES]->(h)
+WITH h, similar_people, similar_names, shared_styles, shared_names,
+     count(l) AS popularity,
+     avg(l.score) AS avg_score
+
+// 3) รวมเป็นคะแนนเดียว (สูตรแบบเดียวกับงานอาจารย์ ปรับให้เข้ากับข้อมูลทรงผม)
+WITH h, similar_people, similar_names, shared_styles, shared_names,
+     popularity, coalesce(avg_score, 0.0) AS avg_score,
+     (similar_people * 3.0) +
+     (shared_styles * 2.0) +
+     (popularity * 0.20) +
+     (coalesce(avg_score, 0.0) * 0.25) AS score
+
+// ตัดทรงที่ไม่มีหลักฐานอะไรเลย (ไม่มีใครชอบ)
+WHERE similar_people > 0 OR popularity > 0
+
+RETURN h.style_id AS style_id, h.name AS style,
+       similar_people, similar_names, shared_styles, shared_names,
+       popularity, round(avg_score * 100) / 100.0 AS avg_score,
+       round(score * 100) / 100.0 AS score
+ORDER BY score DESC, h.style_id
+LIMIT $limit
+"""
+
+
+def recommend_styles(person_id: str, limit: int = 6) -> list[dict[str, Any]]:
+    """แนะนำทรงผมแบบอธิบายเหตุผลได้ (Explainable Hybrid Recommendation)
+
+    score = similar_people × 3     (คนที่ชอบคล้ายกันกี่คนชอบทรงนี้)
+          + shared_styles × 2      (ทรงที่เราชอบกี่ทรงเชื่อมมาถึงทรงนี้)
+          + popularity × 0.20      (ทั้งระบบมีคนชอบกี่คน)
+          + avg_score × 0.25       (คะแนนเฉลี่ยเต็ม 10 เทียบ rating เต็ม 5 × 0.5 ของงานอาจารย์)
+
+    คนใหม่ที่ยังไม่ชอบทรงไหนเลย จะได้คำแนะนำจากความนิยม (popularity + avg_score) แทน
+    """
+    return query(RECOMMEND_CYPHER, {"person_id": person_id, "limit": int(limit)})
+
+
+def save_recommendations(top_n: int = 3) -> int:
+    """คำนวณผลแนะนำของทุกคน แล้วบันทึกเป็นเส้น RECOMMENDED ลง Aura
+
+    ปกติผลแนะนำคำนวณตอนเปิดหน้าเว็บเท่านั้น ไม่ได้อยู่ในฐานข้อมูล
+    ฟังก์ชันนี้ทำให้เปิดดูใน Neo4j Aura ได้ (ต้องกดใหม่ทุกครั้งที่ข้อมูล LIKES เปลี่ยน)
+    """
+    # ลบผลแนะนำเก่าก่อน
+    query("MATCH ()-[r:RECOMMENDED]->() DELETE r", write=True)
+
+    rows = []
+    for person in get_people():
+        for rank, rec in enumerate(recommend_styles(person["person_id"], top_n), start=1):
+            rows.append({
+                "person_id": person["person_id"],
+                "style_id": rec["style_id"],
+                "score": rec["score"],
+                "rank": rank,
+            })
+
+    if rows:
+        query(
+            """
+            UNWIND $rows AS row
+            MATCH (p:Person {person_id: row.person_id}), (h:Style {style_id: row.style_id})
+            MERGE (p)-[r:RECOMMENDED]->(h)
+            SET r.score = row.score, r.rank = row.rank
+            """,
+            {"rows": rows},
+            write=True,
+        )
+    return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# ค้นหา / บันทึกข้อมูล
+# ---------------------------------------------------------------------------
+
+def search_styles(keyword: str = "") -> list[dict[str, Any]]:
+    """ค้นหาทรงผมจากชื่อหรือรหัส พร้อมจำนวนคนชอบและรายชื่อคนที่ชอบ"""
     return query(
         """
-        MATCH (b:Book)
-        OPTIONAL MATCH (a:Author)-[:WROTE]->(b)
-        OPTIONAL MATCH (b)-[:IN_CATEGORY]->(c:Category)
-        WITH b, collect(DISTINCT a.name) AS authors, collect(DISTINCT c.name) AS categories
-        WHERE ($keyword = '' OR toLower(b.title) CONTAINS toLower($keyword)
-               OR any(x IN authors WHERE toLower(x) CONTAINS toLower($keyword)))
-          AND ($category = '' OR $category IN categories)
-        RETURN b.book_id AS book_id, b.title AS title, b.year AS year,
-               authors, categories
-        ORDER BY b.title
+        MATCH (h:Style)
+        WHERE $keyword = ''
+           OR toLower(h.name) CONTAINS toLower($keyword)
+           OR toLower(h.style_id) CONTAINS toLower($keyword)
+        OPTIONAL MATCH (p:Person)-[r:LIKES]->(h)
+        RETURN h.style_id AS style_id, h.name AS style,
+               count(r) AS fans,
+               round(coalesce(avg(r.score), 0) * 100) / 100.0 AS avg_score,
+               collect(p.name) AS liked_by
+        ORDER BY h.style_id
         """,
-        {"keyword": keyword.strip(), "category": category or ""},
+        {"keyword": keyword.strip()},
     )
 
 
-def list_categories() -> list[str]:
-    return [row["name"] for row in query("MATCH (c:Category) RETURN c.name AS name ORDER BY c.name")]
-
-
-def record_borrow(student_id: str, book_id: str, borrow_date: str, rating: float | None = None) -> None:
+def add_person(person_id: str, name: str) -> None:
+    """เพิ่มคนใหม่ (ถ้ารหัสมีอยู่แล้วจะอัปเดตชื่อแทน)"""
     query(
         """
-        MATCH (s:Student {student_id:$student_id}), (b:Book {book_id:$book_id})
-        MERGE (s)-[r:BORROWED]->(b)
-        SET r.borrow_date = date($borrow_date)
-        FOREACH (_ IN CASE WHEN $rating IS NULL THEN [] ELSE [1] END | SET r.rating = $rating)
+        MERGE (p:Person {person_id:$person_id})
+        SET p.name = $name
         """,
-        {"student_id": student_id, "book_id": book_id, "borrow_date": borrow_date, "rating": rating},
+        {"person_id": person_id.strip().upper(), "name": name.strip()},
         write=True,
     )
 
 
-def graph_neighborhood(student_id: str, limit: int = 40) -> list[dict[str, Any]]:
+def record_like(person_id: str, style_id: str, score: int) -> None:
+    """บันทึกว่าคนนี้ชอบทรงนี้ด้วยคะแนนเท่าไร (ชอบซ้ำ = อัปเดตคะแนน ไม่สร้างเส้นซ้ำ)"""
+    query(
+        """
+        MATCH (p:Person {person_id:$person_id}), (h:Style {style_id:$style_id})
+        MERGE (p)-[r:LIKES]->(h)
+        SET r.score = $score
+        """,
+        {"person_id": person_id, "style_id": style_id, "score": int(score)},
+        write=True,
+    )
+
+
+def remove_like(person_id: str, style_id: str) -> None:
+    """ยกเลิกความชอบ (ลบเส้น LIKES)"""
+    query(
+        """
+        MATCH (:Person {person_id:$person_id})-[r:LIKES]->(:Style {style_id:$style_id})
+        DELETE r
+        """,
+        {"person_id": person_id, "style_id": style_id},
+        write=True,
+    )
+
+
+def graph_neighborhood(person_id: str, limit: int = 60) -> list[dict[str, Any]]:
+    """ดึงเส้นรอบตัวคนนี้ 2 ทอด ใช้วาดกราฟในหน้า Graph Explorer
+
+    ทอดที่ 1: คนนี้ -> ทรงที่ชอบ / ทรงที่ถูกแนะนำ
+    ทอดที่ 2: ทรงนั้น <- คนอื่นที่ชอบทรงเดียวกัน
+    """
     return query(
         """
-        MATCH (u:Student {student_id:$student_id})
-        OPTIONAL MATCH p=(u)-[:FRIEND_OF|BORROWED|INTERESTED_IN*1..2]-(x)
+        MATCH (u:Person {person_id:$person_id})
+        OPTIONAL MATCH p=(u)-[:LIKES|RECOMMENDED*1..2]-(x)
         WITH u, collect(p)[0..$limit] AS paths
         UNWIND paths AS p
         UNWIND relationships(p) AS r
         WITH DISTINCT startNode(r) AS s, r, endNode(r) AS t
         RETURN elementId(s) AS source_id, labels(s)[0] AS source_label,
-               coalesce(s.name, s.title, s.student_id, s.book_id) AS source_name,
-               type(r) AS relationship,
+               coalesce(s.name, s.person_id) AS source_name,
+               coalesce(s.person_id, s.style_id) AS source_key,
+               type(r) AS relationship, r.score AS score,
                elementId(t) AS target_id, labels(t)[0] AS target_label,
-               coalesce(t.name, t.title, t.student_id, t.book_id) AS target_name
+               coalesce(t.name, t.style_id) AS target_name,
+               coalesce(t.person_id, t.style_id) AS target_key
         LIMIT $limit
         """,
-        {"student_id": student_id, "limit": int(limit)},
+        {"person_id": person_id, "limit": int(limit)},
     )

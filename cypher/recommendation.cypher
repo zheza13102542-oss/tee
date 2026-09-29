@@ -1,48 +1,41 @@
-// Explainable Hybrid Book Recommendation
-// Parameters: $student_id, $limit
-MATCH (u:Student {student_id:$student_id})
-MATCH (b:Book)
-WHERE NOT (u)-[:BORROWED]->(b)
+// Explainable Hybrid Hair Style Recommendation
+// Parameters: $person_id, $limit
+// ลองรันใน Aura ได้โดยใส่ :param person_id => 'P01'; และ :param limit => 6; ก่อน
+// เริ่มจากคนที่ต้องการคำแนะนำ และทรงผมทุกทรงที่เขายังไม่ได้ชอบ
+MATCH (u:Person {person_id:$person_id})
+MATCH (h:Style)
+WHERE NOT EXISTS { (u)-[:LIKES]->(h) }
 
-// 1) Social signal: books borrowed by friends
-OPTIONAL MATCH (u)-[:FRIEND_OF]-(f:Student)-[:BORROWED]->(b)
-WITH u, b,
-     count(DISTINCT f) AS friend_count,
-     [x IN collect(DISTINCT f.name) WHERE x IS NOT NULL][0..3] AS friend_names
+// 1) Collaborative signal: คนที่ชอบทรงเดียวกับ u และชอบทรง h ด้วย
+//    u -> ทรงที่ชอบ (shared) <- คนอื่น (o) -> h
+OPTIONAL MATCH (u)-[:LIKES]->(shared:Style)<-[:LIKES]-(o:Person)-[:LIKES]->(h)
+WHERE o <> u
+WITH h,
+     count(DISTINCT o) AS similar_people,
+     [x IN collect(DISTINCT o.name) WHERE x IS NOT NULL][0..3] AS similar_names,
+     count(DISTINCT shared) AS shared_styles,
+     [x IN collect(DISTINCT shared.name) WHERE x IS NOT NULL] AS shared_names
 
-// 2) Content signal: categories matching the user's interests
-OPTIONAL MATCH (u)-[:INTERESTED_IN]->(c:Category)<-[:IN_CATEGORY]-(b)
-WITH b, friend_count, friend_names,
-     count(DISTINCT c) AS interest_matches,
-     [x IN collect(DISTINCT c.name) WHERE x IS NOT NULL] AS matched_categories
+// 2) Popularity + score signal: ทรง h มีคนชอบกี่คน คะแนนเฉลี่ยเท่าไร
+OPTIONAL MATCH (:Person)-[l:LIKES]->(h)
+WITH h, similar_people, similar_names, shared_styles, shared_names,
+     count(l) AS popularity,
+     avg(l.score) AS avg_score
 
-// 3) Popularity and rating signal
-OPTIONAL MATCH (:Student)-[br:BORROWED]->(b)
-WITH b, friend_count, friend_names, interest_matches, matched_categories,
-     count(br) AS popularity,
-     coalesce(avg(br.rating), 0.0) AS avg_rating
-
-// 4) Teaching-friendly heuristic score
-WITH b, friend_count, friend_names, interest_matches, matched_categories,
-     popularity, avg_rating,
-     (friend_count * 3.0) +
-     (interest_matches * 2.0) +
+// 3) รวมเป็นคะแนนเดียว (สูตรแบบเดียวกับงานอาจารย์ ปรับให้เข้ากับข้อมูลทรงผม)
+WITH h, similar_people, similar_names, shared_styles, shared_names,
+     popularity, coalesce(avg_score, 0.0) AS avg_score,
+     (similar_people * 3.0) +
+     (shared_styles * 2.0) +
      (popularity * 0.20) +
-     (avg_rating * 0.50) AS score
-WHERE friend_count > 0 OR interest_matches > 0 OR popularity > 0
+     (coalesce(avg_score, 0.0) * 0.25) AS score
 
-OPTIONAL MATCH (a:Author)-[:WROTE]->(b)
-OPTIONAL MATCH (b)-[:IN_CATEGORY]->(allc:Category)
-RETURN b.book_id AS book_id,
-       b.title AS title,
-       collect(DISTINCT a.name) AS authors,
-       collect(DISTINCT allc.name) AS categories,
-       friend_count,
-       friend_names,
-       interest_matches,
-       matched_categories,
-       popularity,
-       round(avg_rating * 100) / 100.0 AS avg_rating,
+// ตัดทรงที่ไม่มีหลักฐานอะไรเลย (ไม่มีใครชอบ)
+WHERE similar_people > 0 OR popularity > 0
+
+RETURN h.style_id AS style_id, h.name AS style,
+       similar_people, similar_names, shared_styles, shared_names,
+       popularity, round(avg_score * 100) / 100.0 AS avg_score,
        round(score * 100) / 100.0 AS score
-ORDER BY score DESC, b.title
+ORDER BY score DESC, h.style_id
 LIMIT $limit;

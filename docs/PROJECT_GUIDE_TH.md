@@ -1,17 +1,13 @@
-# คู่มือสร้างระบบแนะนำหนังสือด้วย Neo4j Aura + Streamlit
+# คู่มือระบบแนะนำทรงผมด้วย Neo4j Aura + Streamlit
 
-## 1) เป้าหมายการเรียนรู้
+## 1) เป้าหมาย
 
-เมื่อทำโปรเจ็คนี้เสร็จ นักศึกษาควรสามารถ
-
-1. ออกแบบ Property Graph จากโจทย์ระบบจริง
+1. ออกแบบ Property Graph จากโจทย์ "คนชอบทรงผม"
 2. อธิบาย Node, Label, Property, Relationship และ Direction
-3. เขียน Cypher สำหรับ CRUD, traversal และ aggregation
-4. เชื่อม Python กับ Neo4j Aura ด้วย official Neo4j Python Driver
+3. เขียน Cypher สำหรับเพิ่มข้อมูล, traversal และ aggregation
+4. เชื่อม Python กับ Neo4j Aura ด้วย Neo4j Python Driver
 5. สร้าง Explainable Recommendation จากความสัมพันธ์ในกราฟ
-6. พัฒนา Web UI ด้วย Streamlit
-7. แยก secret/credential ออกจาก source code
-8. deploy ระบบจาก GitHub ไป Streamlit Community Cloud
+6. พัฒนา Web UI ด้วย Streamlit และ deploy ขึ้น Streamlit Community Cloud
 
 ---
 
@@ -19,7 +15,7 @@
 
 ```mermaid
 flowchart LR
-    U[User / Student] --> ST[Streamlit Web App]
+    U[User] --> ST[Streamlit Web App]
     ST --> PY[neo4j_service.py]
     PY --> NEO[(Neo4j AuraDB)]
     NEO --> PY
@@ -28,8 +24,6 @@ flowchart LR
     CLOUD --> ST
     SEC[Streamlit Secrets] --> ST
 ```
-
-แยกเป็น 4 ชั้น
 
 - **Presentation layer:** `app.py`
 - **Database access layer:** `neo4j_service.py`
@@ -42,149 +36,126 @@ flowchart LR
 
 ```mermaid
 graph LR
-    S1[Student] -- FRIEND_OF --> S2[Student]
-    S1 -- BORROWED --> B[Book]
-    S1 -- INTERESTED_IN --> C[Category]
-    B -- IN_CATEGORY --> C
-    A[Author] -- WROTE --> B
+    P1[Person] -- "LIKES {score}" --> H[Style]
+    P2[Person] -- "LIKES {score}" --> H
+    P1 -. "RECOMMENDED {score, rank}" .-> H2[Style]
 ```
 
 ### Node
 
-| Label | Primary property | ตัวอย่าง property | หน้าที่ |
+| Label | Primary property | Property อื่น | หน้าที่ |
 |---|---|---|---|
-| Student | student_id | name, major, year | ผู้ใช้ระบบ |
-| Book | book_id | title, year | หนังสือ |
-| Category | name | name | หมวดหนังสือ |
-| Author | author_id | name | ผู้แต่ง |
+| Person | person_id | name | ผู้ใช้ระบบ (P01–P15) |
+| Style | style_id | name | ทรงผม (H01–H12) |
 
 ### Relationship
 
 | Relationship | Source → Target | Property | ความหมาย |
 |---|---|---|---|
-| FRIEND_OF | Student → Student | - | ความสัมพันธ์เพื่อน |
-| BORROWED | Student → Book | borrow_date, rating | ประวัติยืมและคะแนน |
-| INTERESTED_IN | Student → Category | - | ความสนใจ |
-| IN_CATEGORY | Book → Category | - | หมวดหนังสือ |
-| WROTE | Author → Book | - | ผู้แต่งหนังสือ |
+| LIKES | Person → Style | score (1–10) | คนชอบทรงนี้ และชอบมากแค่ไหน |
+| RECOMMENDED | Person → Style | score, rank | ผลแนะนำที่บันทึกลงฐานข้อมูล |
 
-> `FRIEND_OF` ถูกสร้างเพียงหนึ่ง relationship ต่อคู่ แต่ query แบบ `-[:FRIEND_OF]-` เมื่อความหมายของงานต้องการมองว่าเป็นเพื่อนแบบสมมาตร
+> `RECOMMENDED` เป็นข้อมูลที่ "คำนวณมา" ไม่ใช่ข้อมูลจริง จึงลบแล้วสร้างใหม่ทุกครั้งที่กดบันทึก
 
 ---
 
 ## 4) เหตุผลที่ Graph Database เหมาะกับโจทย์นี้
 
-ใน RDBMS การหา “หนังสือที่เพื่อนของนักศึกษาเคยยืม แต่เจ้าตัวยังไม่เคยยืม” มักต้อง JOIN หลายตาราง เช่น Student, Friendship, Borrow และ Book
+ในฐานข้อมูลตาราง การหา "ทรงผมที่คนที่ชอบทรงเดียวกับเราชอบ แต่เรายังไม่ชอบ"
+ต้อง JOIN ตาราง Likes กับตัวเองหลายรอบ
 
-ใน Graph สามารถเขียนเป็น pattern ได้ใกล้เคียงกับโจทย์โดยตรง
+ใน Graph เขียนเป็น pattern ตรงกับโจทย์เลย
 
 ```cypher
-MATCH (u:Student {student_id:$student_id})
-      -[:FRIEND_OF]-(friend:Student)
-      -[:BORROWED]->(book:Book)
-WHERE NOT (u)-[:BORROWED]->(book)
-RETURN book
+MATCH (u:Person {person_id:$person_id})
+      -[:LIKES]->(:Style)
+      <-[:LIKES]-(other:Person)
+      -[:LIKES]->(rec:Style)
+WHERE other <> u
+  AND NOT EXISTS { (u)-[:LIKES]->(rec) }
+RETURN rec
 ```
-
-จุดสำคัญคือเรา query **ความสัมพันธ์และเส้นทาง** ไม่ได้มองเฉพาะ record แยกตาราง
 
 ---
 
 ## 5) Recommendation Algorithm
 
-ระบบใช้ Hybrid Heuristic Recommendation เพื่อให้เข้าใจง่ายในระดับปริญญาตรี
+### Signal 1: Collaborative (คนที่ชอบคล้ายกัน)
 
-### Signal 1: Social
-
-จำนวนเพื่อนที่เคยยืมหนังสือเล่มนั้น
+จำนวนคน (ไม่นับซ้ำ) ที่ชอบทรงเดียวกับผู้ใช้อย่างน้อย 1 ทรง และชอบทรงที่จะแนะนำ
 
 ```text
-social_score = friend_count × 3
+similar_score = similar_people × 3
 ```
 
-### Signal 2: Interest / Content
+### Signal 2: Shared styles (ทรงที่เชื่อมมาถึง)
 
-จำนวนหมวดของหนังสือที่ตรงกับความสนใจผู้ใช้
+จำนวนทรงที่ผู้ใช้ชอบ ที่มีเส้นทางเชื่อมมาถึงทรงที่จะแนะนำ
 
 ```text
-interest_score = interest_matches × 2
+shared_score = shared_styles × 2
 ```
 
 ### Signal 3: Popularity
 
-จำนวนครั้งที่หนังสือถูกยืมโดยนักศึกษาทั้งระบบ
+จำนวนคนทั้งระบบที่ชอบทรงนี้
 
 ```text
 popularity_score = popularity × 0.20
 ```
 
-### Signal 4: Rating
+### Signal 4: Average score
 
-คะแนนเฉลี่ยจาก relationship `BORROWED.rating`
+คะแนนความชอบเฉลี่ยจาก `LIKES.score` (เต็ม 10)
 
 ```text
-rating_score = average_rating × 0.50
+avg_score_score = avg_score × 0.25
 ```
 
 ### Final score
 
 ```text
-score = social_score
-      + interest_score
-      + popularity_score
-      + rating_score
+score = similar_score + shared_score + popularity_score + avg_score_score
 ```
 
-และตัดหนังสือที่ผู้ใช้เคยยืมแล้วออกด้วย
+และตัดทรงที่ผู้ใช้ชอบอยู่แล้วออก
 
 ```cypher
-WHERE NOT (u)-[:BORROWED]->(b)
+WHERE NOT EXISTS { (u)-[:LIKES]->(h) }
 ```
 
-สูตรนี้มีเป้าหมายเพื่อสอนแนวคิด recommendation และ graph traversal ไม่ได้อ้างว่าเป็นสูตรที่เหมาะที่สุดในเชิงวิจัย
+ผู้ใช้ใหม่ที่ยังไม่ชอบทรงไหน (cold start) จะไม่มี signal 1–2 ระบบจึงแนะนำจากความนิยมและคะแนนเฉลี่ยแทน
 
 ---
 
 ## 6) Explainable Recommendation
 
-ระบบไม่ได้คืนเพียง title และ score แต่คืน evidence ด้วย เช่น
-
-- เพื่อนกี่คนเคยยืม
-- เพื่อนชื่ออะไร
-- ตรงกับหมวดความสนใจใด
-- หนังสือถูกยืมกี่ครั้ง
-- rating เฉลี่ยเท่าใด
-
-ตัวอย่างคำอธิบายบน UI
+ตัวอย่างเหตุผลที่แสดงบนหน้าเว็บ
 
 ```text
-เพื่อน 2 คนเคยยืม (Mali, Krit)
-• ตรงกับความสนใจ 1 หมวด (Data Science)
-• ถูกยืมแล้ว 3 ครั้ง
-• คะแนนเฉลี่ย 4.67/5
+คนที่ชอบคล้ายคุณ 2 คนชอบทรงนี้ (ญาดา, อริสา)
+• เชื่อมมาจากทรงที่คุณชอบ 2 ทรง (ยาวดัดลอน, ดัดโครงสร้าง)
+• มีคนชอบทั้งหมด 3 คน
+• คะแนนเฉลี่ย 8.67/10
 ```
 
-นี่เป็นข้อดีเชิงการเรียนรู้ เพราะนักศึกษาสามารถ trace กลับไปยัง graph pattern ที่ทำให้เกิดคำแนะนำได้
+ทุกข้อ trace กลับไปหาเส้นทางในกราฟได้ (ดูได้จากหน้า Graph Explorer)
 
 ---
 
-## 7) Constraint และเหตุผลที่ต้องใช้ MERGE
-
-สร้าง key ของ node ให้ unique
+## 7) Constraint และ MERGE
 
 ```cypher
-CREATE CONSTRAINT student_id_unique IF NOT EXISTS
-FOR (s:Student) REQUIRE s.student_id IS UNIQUE;
+CREATE CONSTRAINT person_id_unique IF NOT EXISTS
+FOR (p:Person) REQUIRE p.person_id IS UNIQUE;
 ```
-
-การ seed ตัวอย่างใช้ `MERGE`
 
 ```cypher
-MERGE (s:Student {student_id: row.student_id})
-SET s.name = row.name
+MERGE (p:Person {person_id: row.person_id})
+SET p.name = row.name
 ```
 
-ข้อดีคือใช้ `student_id` เป็นตัวระบุ node เดิมก่อนสร้างใหม่ ทำให้ script ตัวอย่างสามารถรันซ้ำได้โดยไม่เพิ่ม Student เดิมเป็นหลาย node
+`MERGE` หาก่อน ถ้าไม่มีค่อยสร้าง จึงกดปุ่มสร้างข้อมูลซ้ำได้ และใช้ร่วมกับข้อมูลที่เคยใส่จาก notebook ได้
 
 ---
 
@@ -193,23 +164,21 @@ SET s.name = row.name
 ไม่ควรเขียน
 
 ```python
-cypher = "MATCH (s:Student {student_id:'" + student_id + "'}) RETURN s"
+cypher = "MATCH (p:Person {person_id:'" + person_id + "'}) RETURN p"
 ```
 
 ควรเขียน
 
 ```python
-cypher = "MATCH (s:Student {student_id:$student_id}) RETURN s"
-params = {"student_id": student_id}
+cypher = "MATCH (p:Person {person_id:$person_id}) RETURN p"
+params = {"person_id": person_id}
 ```
-
-แล้วส่ง parameter ผ่าน Neo4j Driver ซึ่งทำให้โค้ดอ่านง่ายและหลีกเลี่ยงการนำ input ไปประกอบ query string โดยตรง
 
 ---
 
 ## 9) การเชื่อมต่อ Neo4j Aura
 
-`neo4j_service.py` สร้าง `Driver` เพียงหนึ่งตัวและ cache ด้วย `@st.cache_resource`
+`neo4j_service.py` สร้าง `Driver` ตัวเดียวแล้ว cache ด้วย `@st.cache_resource`
 
 ```python
 @st.cache_resource(show_spinner=False)
@@ -219,185 +188,46 @@ def get_driver():
     return driver
 ```
 
-จากนั้น query ด้วย `driver.execute_query()` พร้อมระบุ database และ parameter
-
-```python
-records, _, _ = driver.execute_query(
-    cypher,
-    parameters_=parameters,
-    database_=database,
-)
-```
-
 ---
 
 ## 10) หน้าจอของระบบ
 
-### Dashboard
-
-- จำนวน Student
-- จำนวน Book
-- จำนวน BORROWED
-- จำนวน FRIEND_OF
-- profile และประวัติยืม
-
-### Recommendations
-
-- เลือก Student
-- กำหนด Top-N
-- แสดง score
-- แสดงเหตุผลประกอบคำแนะนำ
-
-### Book Search
-
-- ค้นจากชื่อหนังสือ
-- ค้นจากผู้แต่ง
-- filter จาก Category
-
-### Borrow / Rate
-
-- เลือก Student
-- เลือก Book
-- บันทึก borrow_date
-- บันทึก rating
-
-### Graph Explorer
-
-- แสดง neighborhood graph ของ Student
-- ใช้ relationship จริงจาก Aura
-- เปิดดู edge table ได้
-
-### Admin / Setup
-
-- สร้าง constraints
-- seed sample nodes/relationships
-- ใช้ `MERGE` เพื่อรองรับการรันซ้ำ
+- **Dashboard:** จำนวน Person / Style / LIKES / RECOMMENDED, กราฟทรงผมยอดนิยม, ทรงที่ผู้ใช้ชอบ
+- **Recommendations:** เลือกผู้ใช้, กำหนด Top-N, แสดงคะแนนและเหตุผล
+- **Style Search:** ค้นหาทรงผมจากชื่อหรือรหัส พร้อมรายชื่อคนที่ชอบ
+- **Like / Rate:** เพิ่มผู้ใช้ใหม่, บันทึกความชอบพร้อมคะแนน, ยกเลิกความชอบ
+- **Graph Explorer:** กราฟรอบตัวผู้ใช้ 2 ทอด (ตัวเอง = ส้ม, คน = ฟ้า, ทรงผม = เขียว, แนะนำ = เส้นประม่วง)
+- **Admin / Setup:** สร้าง constraint + ข้อมูลตั้งต้น, บันทึกผลแนะนำลง Aura
 
 ---
 
-## 11) Secrets
+## 11) ทำไมผลแนะนำไม่ขึ้นใน Aura เอง
 
-สร้าง local file
+ผลแนะนำคำนวณจาก query ตอนเปิดหน้าเว็บ ไม่ได้ถูกเก็บในฐานข้อมูล
+ต้องกด **บันทึกผลแนะนำลง Aura** ในหน้า Admin (หรือรัน `cypher/save_recommended.cypher`)
+จากนั้นดูใน Aura → Query
 
-```text
-.streamlit/secrets.toml
-```
-
-เนื้อหา
-
-```toml
-[neo4j]
-uri = "neo4j+s://YOUR_INSTANCE.databases.neo4j.io"
-username = "neo4j"
-password = "YOUR_PASSWORD"
-database = "neo4j"
-```
-
-ห้าม commit ไฟล์นี้ขึ้น GitHub โดย `.gitignore` ของโปรเจ็คเตรียมไว้แล้ว
-
----
-
-## 12) GitHub
-
-ตัวอย่างคำสั่ง
-
-```bash
-git init
-git add .
-git commit -m "Initial GraphBook recommender"
-git branch -M main
-git remote add origin YOUR_GITHUB_REPOSITORY_URL
-git push -u origin main
-```
-
-ก่อน push ตรวจอีกครั้งว่า `.streamlit/secrets.toml` ไม่อยู่ใน staged files
-
-```bash
-git status
+```cypher
+MATCH path = (:Person {person_id:'P01'})-[:LIKES|RECOMMENDED]->(:Style)
+RETURN path
 ```
 
 ---
 
-## 13) Deploy Streamlit Community Cloud
+## 12) Secrets, GitHub และ Deploy
 
-1. เปิด Streamlit Community Cloud
-2. Create app
-3. เลือก GitHub repository
-4. branch = `main`
-5. main file = `app.py`
-6. Advanced settings → Secrets
-7. paste ค่า `[neo4j] ...`
-8. Deploy
-
-เมื่อ app เริ่มทำงานจะติดตั้ง package ตาม `requirements.txt`
+1. สร้าง `.streamlit/secrets.toml` จากไฟล์ตัวอย่าง (ไฟล์นี้ถูก `.gitignore` กันไว้)
+2. `git add .` → `git commit` → `git push`
+3. ตรวจด้วย `git status` ว่า `secrets.toml` ไม่ถูก commit
+4. Streamlit Community Cloud → Create app → main file = `app.py` → ใส่ Secrets → Deploy
 
 ---
 
-## 14) ลำดับ Lab ที่แนะนำ
+## 13) แนวทางต่อยอด
 
-### Lab 1 — Graph Model
-ให้นักศึกษาวาด Node/Relationship ก่อนเขียนโปรแกรม
-
-### Lab 2 — Seed Data
-สร้าง constraint และใช้ `UNWIND + MERGE`
-
-### Lab 3 — Basic Cypher
-`MATCH`, `WHERE`, `RETURN`, `ORDER BY`
-
-### Lab 4 — Traversal
-หา Book ผ่าน Friend
-
-### Lab 5 — Aggregation
-ใช้ `count(DISTINCT friend)`, `avg(rating)`, `collect()`
-
-### Lab 6 — Recommendation
-รวมหลาย signal เป็น score
-
-### Lab 7 — Python Driver
-เรียก Cypher จาก Python แบบ parameterized
-
-### Lab 8 — Streamlit
-สร้าง UI และ state จาก widget
-
-### Lab 9 — Deployment
-GitHub + Secrets + Streamlit Cloud
-
-### Lab 10 — Evaluation / Extension
-ให้นักศึกษาปรับ weight หรือเพิ่ม algorithm แล้วเปรียบเทียบผล
-
----
-
-## 15) แนวทางต่อยอดเป็น Mini Project / Senior Project
-
-1. Authentication และ Role: Student/Admin
-2. Favorite / Wishlist
-3. RETURNED, RESERVATION และ due date
-4. book availability
-5. friend suggestion
-6. User-to-user similarity
-7. Book-to-book similarity
-8. Neo4j Graph Data Science
-9. PageRank / community detection
-10. Precision@K, Recall@K, NDCG@K
-11. A/B comparison ระหว่าง Social-only, Content-only และ Hybrid
-12. Explainability study ว่าผู้ใช้เชื่อถือ recommendation มากขึ้นหรือไม่เมื่อเห็นเหตุผล
-
----
-
-## 16) จุดที่แก้จาก notebook ต้นแบบ
-
-Notebook เดิมมีแนวคิดที่ดีสำหรับ traversal `Student → Friend → Borrowed → Book` แต่เมื่อนำไปทำระบบจริงจำเป็นต้องทำให้ schema และ execution reproducible มากขึ้น จึงปรับดังนี้
-
-- ใช้ `Student` label เดียวทั้งระบบ
-- constraint อ้าง `Student` ไม่ใช่ label คนละชื่อ
-- seed ด้วย `MERGE` แทน `CREATE`
-- relationship query ของ Friend ใช้ traversal แบบไม่สน direction
-- credential แยกออกจาก source code
-- เพิ่ม Category/Author/Interest
-- เพิ่ม Borrow rating
-- เพิ่ม hybrid recommendation
-- เพิ่ม explanation
-- แยก UI กับ database service
-- เพิ่ม deployment files สำหรับ GitHub/Streamlit Cloud
-
-ผลคือโค้ดเหมาะกับการสอนตั้งแต่ Graph Modeling จนถึง Web Deployment และสามารถต่อยอดเป็นโครงงานระดับปริญญาตรีได้
+1. เพิ่ม node `Category` (เช่น สั้น / กลาง / ยาว) และ `INTERESTED_IN` เพื่อเพิ่ม content signal
+2. เพิ่มข้อมูลคน เช่น เพศ, รูปหน้า แล้วแนะนำตามลักษณะ
+3. เพิ่ม `SIMILAR_TO` ระหว่างคนหรือทรงผม
+4. Neo4j Graph Data Science: Node Similarity, PageRank, Community Detection
+5. วัดผลด้วย Precision@K / Recall@K
+6. เปรียบเทียบ Collaborative-only กับ Hybrid
