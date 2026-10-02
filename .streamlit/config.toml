@@ -1,0 +1,19 @@
+# ธีมของเว็บ: โทนร้านตัดผม (กรมท่า + แดงเสาตัดผม + ทองเหลือง)
+[theme]
+base = "light"
+primaryColor = "#B3261E"
+backgroundColor = "#F3F5F7"
+secondaryBackgroundColor = "#E5EAF0"
+textColor = "#1B2A41"
+font = "Anuphan:https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&display=swap, sans-serif"
+headingFont = "Chonburi:https://fonts.googleapis.com/css2?family=Chonburi&display=swap, serif"
+headingFontWeights = [400, 400, 400, 400, 400, 400]
+baseRadius = "0.6rem"
+
+# แถบเมนูด้านข้าง = ป้ายร้านสีกรมท่า
+[theme.sidebar]
+backgroundColor = "#1B2A41"
+secondaryBackgroundColor = "#26395A"
+textColor = "#EEF1F5"
+primaryColor = "#C9A24B"
+headingFont = "Chonburi:https://fonts.googleapis.com/css2?family=Chonburi&display=swap, serif"

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import html
+
 import pandas as pd
 import streamlit as st
 
@@ -38,36 +40,94 @@ from neo4j_service import (
 )
 
 st.set_page_config(
-    page_title="HairGraph Recommender",
-    page_icon="💇",
+    page_title="HairGraph Barber & Salon",
+    page_icon="💈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# ---------------------------------------------------------------------------
+# หน้าตาเว็บแบบร้านตัดผม
+#   สี: กรมท่า (ป้ายร้าน) + แดงเสาตัดผม + ทองเหลือง (กรอบกระจก/ป้าย)
+#   ฟอนต์: ตั้งไว้ใน .streamlit/config.toml (Chonburi = หัวข้อแบบป้ายร้าน, Anuphan = เนื้อหา)
+# ---------------------------------------------------------------------------
 st.markdown(
     """
     <style>
-      .block-container {padding-top: 1.3rem; padding-bottom: 2rem;}
-      .hero {
-        padding: 1.4rem 1.6rem; border-radius: 22px;
-        background: linear-gradient(120deg, #1e1b4b 0%, #4c1d95 55%, #be185d 100%);
-        color: white; margin-bottom: 1rem;
+      :root {
+        --navy: #1B2A41;
+        --red: #B3261E;
+        --brass: #C9A24B;
+        --paper: #FBFCFD;
+        --line: #D5DCE4;
+        --soft: #5B6878;
       }
-      .hero h1 {margin:0; font-size:2.15rem;}
-      .hero p {opacity:.88; margin:.35rem 0 0 0;}
-      .style-card {
-        padding: 1rem 1.1rem; border: 1px solid rgba(128,128,128,.25);
-        border-radius: 16px; margin-bottom: .75rem;
+      .block-container {padding-top: 3.4rem; padding-bottom: 3rem; max-width: 1180px;}
+
+      /* ----- ป้ายร้าน (hero) + เสาตัดผมหมุน ----- */
+      .shop-sign {
+        display: flex; gap: 1.6rem; align-items: stretch;
+        background: var(--navy); color: #F4EEE2;
+        border-radius: 18px; padding: 1.4rem 1.8rem 1.4rem 1.4rem;
+        outline: 1px solid rgba(201,162,75,.55); outline-offset: -9px;
+        margin-bottom: 1.4rem;
       }
-      .score-pill {
-        display:inline-block; padding:.2rem .55rem; border-radius:999px;
-        background:#6C4AB6; color:white; font-size:.8rem; font-weight:700;
+      .pole {
+        width: 26px; flex: none; border-radius: 13px;
+        border-top: 9px solid var(--brass); border-bottom: 9px solid var(--brass);
+        background: repeating-linear-gradient(-45deg,
+          var(--red) 0 12px, #F7F8FA 12px 24px, #2457A6 24px 36px, #F7F8FA 36px 48px);
+        animation: pole-spin 2.6s linear infinite;
+        box-shadow: inset -5px 0 8px rgba(0,0,0,.25), inset 4px 0 6px rgba(255,255,255,.35);
       }
-      .muted {opacity:.72; font-size:.9rem;}
+      @keyframes pole-spin { to { background-position: 0 -67.88px; } }
+      @media (prefers-reduced-motion: reduce) { .pole { animation: none; } }
+      .shop-sign h1 {
+        font-family: "Chonburi", serif; font-weight: 400;
+        font-size: 2.35rem; line-height: 1.15; margin: 0; padding: 0; color: #F4EEE2;
+      }
+      .shop-sign .since { color: var(--brass); font-size: .95rem; letter-spacing: .04em; margin: 0 0 .3rem 0; }
+      .shop-sign .tagline { margin: .45rem 0 0 0; color: #CBD4E0; font-size: 1.02rem; max-width: 52ch; }
+
+      /* ----- รูปทรงผม = กระจกโค้งแบบร้านทำผม ----- */
+      [data-testid="stImage"] img {
+        border-radius: 999px 999px 14px 14px;
+        aspect-ratio: 4 / 5; object-fit: cover;
+        border: 3px solid #fff; box-shadow: 0 0 0 1px var(--line);
+      }
       .no-image {
-        aspect-ratio: 1 / 1; display:flex; align-items:center; justify-content:center;
-        border: 1px dashed rgba(128,128,128,.45); border-radius: 12px; opacity:.6;
+        aspect-ratio: 4 / 5; display: flex; align-items: center; justify-content: center;
+        border: 1.5px dashed var(--line); border-radius: 999px 999px 14px 14px; color: var(--soft);
       }
+      .style-name { font-weight: 600; font-size: 1.02rem; margin-top: .35rem; line-height: 1.35; }
+      .style-code { color: var(--soft); font-size: .85rem; }
+
+      /* ----- การ์ดแนะนำ = รายการในเมนูร้าน (ชื่อ ....... คะแนน) ----- */
+      .menu-head { display: flex; align-items: baseline; gap: .6rem; }
+      .menu-no {
+        font-family: "Chonburi", serif; color: var(--red); font-size: 1.05rem; flex: none;
+      }
+      .menu-name { font-family: "Chonburi", serif; font-size: 1.55rem; line-height: 1.25; }
+      .menu-dots { flex: 1; border-bottom: 2px dotted #9AA6B5; transform: translateY(-.35rem); min-width: 2rem; }
+      .menu-score { font-family: "Chonburi", serif; font-size: 1.55rem; color: var(--navy); flex: none; }
+      .menu-code { color: var(--soft); font-size: .88rem; margin: .1rem 0 .7rem 0; }
+      .reasons { margin: 0; padding-left: 1.1rem; color: #2E3B4E; }
+      .reasons li { margin: .15rem 0; }
+      .reasons li::marker { color: var(--brass); content: "✂  "; }
+
+      /* ----- ตัวเลขสรุป ----- */
+      [data-testid="stMetric"] {
+        background: var(--paper); border: 1px solid var(--line);
+        border-top: 4px solid var(--red); border-radius: 12px; padding: .8rem 1rem;
+      }
+      [data-testid="stMetricValue"] { font-family: "Chonburi", serif; }
+
+      /* ----- แถบเมนูด้านข้าง ----- */
+      [data-testid="stSidebar"] .brand {
+        font-family: "Chonburi", serif; font-size: 1.6rem; color: #F4EEE2; margin: 0; line-height: 1.2;
+      }
+      [data-testid="stSidebar"] .brand-sub { color: var(--brass); margin: .1rem 0 .4rem 0; font-size: .95rem; }
+      [data-testid="stSidebar"] [role="radiogroup"] label { padding: .3rem 0; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -163,9 +223,18 @@ def style_gallery(rows: list[dict], columns: int = 4, caption_key: str | None = 
         for col, row in zip(cols, rows[start:start + columns]):
             with col:
                 show_style_image(row.get("image"))
-                st.markdown(f"**{row['style']}**  \n`{row['style_id']}`")
+                st.markdown(
+                    f'<div class="style-name">{html.escape(str(row["style"]))}</div>'
+                    f'<div class="style-code">{html.escape(str(row["style_id"]))}</div>',
+                    unsafe_allow_html=True,
+                )
                 if caption_key:
                     st.caption(caption_key.format(**row))
+
+
+def explain_parts(row: dict) -> list[str]:
+    """แปลงตัวเลขจาก Cypher เป็นเหตุผลทีละข้อ (ใช้แสดงเป็นรายการในการ์ดแนะนำ)"""
+    return explain_reason(row).split(" • ")
 
 
 def explain_reason(row: dict) -> str:
@@ -187,8 +256,20 @@ def explain_reason(row: dict) -> str:
 require_connection()
 
 with st.sidebar:
-    st.markdown("## 💇 HairGraph")
-    st.caption("Neo4j Aura + Streamlit")
+    st.markdown(
+        '<p class="brand">💈 HairGraph</p><p class="brand-sub">Barber &amp; Salon</p>',
+        unsafe_allow_html=True,
+    )
+    # ค่าของเมนูยังเป็นชื่อภาษาอังกฤษเดิม (โค้ดด้านล่างใช้เทียบ) แต่แสดงเป็นภาษาไทย
+    MENU_TH = {
+        "Dashboard": "หน้าร้าน",
+        "Recommendations": "แนะนำทรงผม",
+        "Style Search": "ค้นหาทรงผม",
+        "Like / Rate": "ให้คะแนนทรงผม",
+        "Manage Data": "จัดการข้อมูล",
+        "Graph Explorer": "กราฟความสัมพันธ์",
+        "Admin / Setup": "ตั้งค่าระบบ",
+    }
     page = st.radio(
         "เมนู",
         [
@@ -200,15 +281,20 @@ with st.sidebar:
             "Graph Explorer",
             "Admin / Setup",
         ],
+        format_func=lambda p: MENU_TH[p],
     )
     st.divider()
     st.caption("Graph Database Project")
 
 st.markdown(
     """
-    <div class="hero">
-      <h1>💇 HairGraph Recommendation System</h1>
-      <p>ระบบแนะนำทรงผมด้วย Graph Database ที่อธิบายเหตุผลของคำแนะนำได้</p>
+    <div class="shop-sign">
+      <div class="pole" aria-hidden="true"></div>
+      <div>
+        <p class="since">Barber &amp; Salon · Neo4j Aura</p>
+        <h1>HairGraph</h1>
+        <p class="tagline">ร้านที่รู้ว่าคุณน่าจะชอบทรงไหน จากคนที่ชอบทรงเดียวกับคุณ และบอกเหตุผลได้ทุกคำแนะนำ</p>
+      </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -221,15 +307,19 @@ if page == "Dashboard":
     st.subheader("ภาพรวมระบบ")
     m = get_dashboard_metrics()
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("People", m.get("people", 0))
-    c2.metric("Hair styles", m.get("styles", 0))
-    c3.metric("LIKES relationships", m.get("likes", 0))
-    c4.metric("RECOMMENDED saved", m.get("recommended", 0))
+    c1.metric("ลูกค้าในระบบ", m.get("people", 0))
+    c2.metric("ทรงผมในร้าน", m.get("styles", 0))
+    c3.metric("ความชอบ (LIKES)", m.get("likes", 0))
+    c4.metric("ผลแนะนำที่บันทึก", m.get("recommended", 0))
 
     st.markdown("### ทรงผมยอดนิยม")
     pop = pd.DataFrame(style_popularity())
     if not pop.empty:
-        st.bar_chart(pop.set_index("style")["fans"], horizontal=True)
+        st.bar_chart(
+            pop.rename(columns={"style": "ทรงผม", "fans": "จำนวนคนชอบ"}),
+            x="ทรงผม", y="จำนวนคนชอบ", horizontal=True, color="#1B2A41",
+            sort="-จำนวนคนชอบ",   # ทรงที่คนชอบมากสุดอยู่บนสุด
+        )
 
     st.divider()
     person_id = person_selector("dash_person")
@@ -244,7 +334,7 @@ if page == "Dashboard":
 
 # ---------------------------------------------------------------------------
 elif page == "Recommendations":
-    st.subheader("✨ ทรงผมที่แนะนำ")
+    st.subheader("ทรงผมที่แนะนำ")
     person_id = person_selector("rec_person")
     top_n = st.slider("จำนวนคำแนะนำ", 3, 12, 6)
     rows = recommend_styles(person_id, top_n)
@@ -261,17 +351,23 @@ elif page == "Recommendations":
             with left:
                 show_style_image(row.get("image"))
             with right:
+                # แบบรายการในเมนูร้าน: No.1  ชื่อทรง ............ คะแนน
+                reasons = "".join(f"<li>{html.escape(p)}</li>" for p in explain_parts(row))
                 st.markdown(
-                    f'<span class="score-pill">#{i} · score {row["score"]:.2f}</span>'
-                    f'<h3 style="margin:.45rem 0 .1rem 0">{row["style"]}</h3>'
-                    f'<div class="muted">{row["style_id"]}</div>',
+                    f'<div class="menu-head">'
+                    f'<span class="menu-no">No.{i}</span>'
+                    f'<span class="menu-name">{html.escape(str(row["style"]))}</span>'
+                    f'<span class="menu-dots"></span>'
+                    f'<span class="menu-score">{row["score"]:.2f}</span>'
+                    f'</div>'
+                    f'<div class="menu-code">{html.escape(str(row["style_id"]))} · คะแนนแนะนำ</div>'
+                    f'<ul class="reasons">{reasons}</ul>',
                     unsafe_allow_html=True,
                 )
-                st.markdown(f"**เหตุผล:** {explain_reason(row)}")
 
 # ---------------------------------------------------------------------------
 elif page == "Style Search":
-    st.subheader("🔎 ค้นหาทรงผม")
+    st.subheader("ค้นหาทรงผม")
     keyword = st.text_input("ชื่อทรงหรือรหัส", placeholder="เช่น บ๊อบ, ลอน, H05")
     rows = search_styles(keyword)
     st.write(f"พบ {len(rows)} รายการ")
@@ -285,7 +381,7 @@ elif page == "Style Search":
 
 # ---------------------------------------------------------------------------
 elif page == "Like / Rate":
-    st.subheader("📝 บันทึกความชอบและให้คะแนน")
+    st.subheader("บันทึกความชอบและให้คะแนน")
     person_id = person_selector("like_person")
     styles = get_styles()
     if not styles:
@@ -314,7 +410,7 @@ elif page == "Like / Rate":
 
 # ---------------------------------------------------------------------------
 elif page == "Manage Data":
-    st.subheader("🗂️ จัดการข้อมูล (เพิ่ม / แก้ไข / ลบ)")
+    st.subheader("จัดการข้อมูล (เพิ่ม / แก้ไข / ลบ)")
     tab_person, tab_style, tab_like = st.tabs(["👤 คน", "💇 ทรงผม", "❤️ ความชอบ"])
 
     # ----- คน -----
@@ -485,7 +581,7 @@ elif page == "Manage Data":
 
 # ---------------------------------------------------------------------------
 elif page == "Graph Explorer":
-    st.subheader("🕸️ Graph Explorer")
+    st.subheader("กราฟความสัมพันธ์")
     person_id = person_selector("graph_person")
     rows = graph_neighborhood(person_id)
     if not rows:
@@ -502,30 +598,30 @@ elif page == "Graph Explorer":
             ]:
                 if nid not in seen_nodes:
                     if key == person_id:
-                        color = "#F2A07B"
+                        color = "#F4B4AE"   # ตัวเอง = แดงอ่อน (สีเสาตัดผม)
                     elif label == "Person":
-                        color = "#BFDBFE"
+                        color = "#C9D6EA"   # คน = กรมท่าอ่อน
                     else:
-                        color = "#BBF7D0"
+                        color = "#EADCB3"   # ทรงผม = ทองเหลืองอ่อน
                     safe_name = str(name).replace('"', "'")
                     dot.append(f'"{nid}" [label="{safe_name}\\n{key}", fillcolor="{color}"];')
                     seen_nodes.add(nid)
             if r["relationship"] == "RECOMMENDED":
                 dot.append(
                     f'"{r["source_id"]}" -> "{r["target_id"]}" '
-                    f'[label="RECOMMENDED", color="#6C4AB6", fontcolor="#6C4AB6", style=dashed, penwidth=2];'
+                    f'[label="RECOMMENDED", color="#B3261E", fontcolor="#B3261E", style=dashed, penwidth=2];'
                 )
             else:
                 dot.append(f'"{r["source_id"]}" -> "{r["target_id"]}" [label="LIKES {r["score"]}"];')
         dot.append("}")
         st.graphviz_chart("\n".join(dot), width="stretch")
-        st.caption("เส้นประสีม่วงจะขึ้นหลังจากกด 'บันทึกผลแนะนำลง Aura' ในหน้า Admin / Setup")
+        st.caption("เส้นประสีแดงจะขึ้นหลังจากกด 'บันทึกผลแนะนำลง Aura' ในหน้า Admin / Setup")
         with st.expander("ดูข้อมูล edge ที่ใช้วาดกราฟ"):
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 # ---------------------------------------------------------------------------
 elif page == "Admin / Setup":
-    st.subheader("⚙️ Setup ข้อมูล")
+    st.subheader("ตั้งค่าระบบ")
     st.markdown(
         """
         **Graph schema**
